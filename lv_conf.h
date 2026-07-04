@@ -37,10 +37,9 @@
 #define LV_MEM_SIZE (512U * 1024U)   /* 512 kB */
 
 /** Set an address for the memory pool instead of allocating it as a global array */
-#define LV_MEM_ADR 0  /* 0: unused */
-/* Instead of an address give a memory allocator that will be called to get a memory pool for LVGL */
-#define LV_MEM_POOL_INCLUDE
-#define LV_MEM_POOL_ALLOC
+#define LV_MEM_ADR 0  /* 0: unused (LVGL allocates a global array of LV_MEM_SIZE bytes) */
+/* LV_MEM_POOL_INCLUDE and LV_MEM_POOL_ALLOC are only needed when
+ * LV_MEM_CUSTOM = 1 (custom allocator). They are intentionally omitted here. */
 
 /*====================
    HAL SETTINGS

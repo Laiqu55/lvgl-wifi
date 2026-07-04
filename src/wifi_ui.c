@@ -387,8 +387,10 @@ static void refresh_ap_list(void)
         return;
     }
 
-    /* Snapshot the shared AP list under lock, then render without holding it. */
-    static wifi_ap_t ap_storage[WIFI_MAX_AP_COUNT];
+    /* Snapshot the shared AP list under lock into a local stack buffer,
+     * then render without holding the mutex. Using a local (non-static)
+     * array means each call gets its own copy with no aliasing concerns. */
+    wifi_ap_t ap_storage[WIFI_MAX_AP_COUNT];
     int ap_count;
 
     pthread_mutex_lock(&g_ap_mutex);
