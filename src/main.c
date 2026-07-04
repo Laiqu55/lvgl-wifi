@@ -52,11 +52,6 @@
 /* LVGL tick source (1 ms resolution using CLOCK_MONOTONIC)            */
 /* ------------------------------------------------------------------ */
 
-static void tick_thread_func(void)
-{
-    /* Runs on the main thread – not a real thread; called by the loop */
-}
-
 static uint32_t get_tick_ms(void)
 {
     struct timespec ts;

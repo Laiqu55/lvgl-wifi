@@ -52,6 +52,15 @@
 /* Shared WiFi info (written by background threads, read on UI thread) */
 static wifi_info_t g_wifi_info;
 
+/* Mutex protecting g_wifi_info.ap_list / ap_count between the scan
+ * worker thread and the UI refresh function running in the LVGL loop. */
+static pthread_mutex_t g_ap_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Password buffer for the current connect operation.
+ * Safe without a mutex because the g_connecting flag serialises access:
+ * a new connection cannot start until the previous one clears the flag. */
+static char g_pass_buf[WIFI_MAX_PASS_LEN];
+
 /* Background operation flags – set by worker threads, cleared by UI */
 static volatile int g_scan_done    = 0; /* scan finished         */
 static volatile int g_connect_done = 0; /* connect attempt done  */
@@ -111,8 +120,14 @@ static void close_password_dialog(void);
 static void *scan_worker(void *arg)
 {
     (void)arg;
-    memset(&g_wifi_info, 0, sizeof(g_wifi_info));
-    wifi_scan(&g_wifi_info);
+    wifi_info_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    wifi_scan(&tmp);
+
+    pthread_mutex_lock(&g_ap_mutex);
+    g_wifi_info = tmp;
+    pthread_mutex_unlock(&g_ap_mutex);
+
     g_scan_done = 1;
     g_scanning  = 0;
     return NULL;
@@ -120,7 +135,6 @@ static void *scan_worker(void *arg)
 
 static void *connect_worker(void *arg)
 {
-    (void)arg;
     const char *pass = (const char *)arg;
 
     /* g_pending_ap.ssid is already set by the caller */
@@ -133,17 +147,22 @@ static void *connect_worker(void *arg)
 }
 
 /* ------------------------------------------------------------------ */
-/* Signal-strength bar text (ASCII art, 4 columns)                     */
+/* Signal-strength indicator text                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Returns a short text label describing signal quality.
+ * Uses LV_SYMBOL_WIFI repeated 1–4 times to indicate bars.
+ * An em-dash placeholder aligns entries with fewer bars.
+ */
 static const char *bars_text(int signal_dbm)
 {
     int b = wifi_signal_bars(signal_dbm);
     switch (b) {
-        case 4: return LV_SYMBOL_CHARGE " " LV_SYMBOL_CHARGE " " LV_SYMBOL_CHARGE " " LV_SYMBOL_CHARGE;
-        case 3: return LV_SYMBOL_CHARGE " " LV_SYMBOL_CHARGE " " LV_SYMBOL_CHARGE;
-        case 2: return LV_SYMBOL_CHARGE " " LV_SYMBOL_CHARGE;
-        default: return LV_SYMBOL_CHARGE;
+        case 4: return LV_SYMBOL_WIFI LV_SYMBOL_WIFI LV_SYMBOL_WIFI LV_SYMBOL_WIFI;
+        case 3: return LV_SYMBOL_WIFI LV_SYMBOL_WIFI LV_SYMBOL_WIFI;
+        case 2: return LV_SYMBOL_WIFI LV_SYMBOL_WIFI;
+        default: return LV_SYMBOL_WIFI;
     }
 }
 
@@ -233,9 +252,8 @@ static void dialog_connect_cb(lv_event_t *e)
         return;
 
     const char *pass = lv_textarea_get_text(g_pass_ta);
-    static char pass_copy[WIFI_MAX_PASS_LEN];
-    strncpy(pass_copy, pass ? pass : "", WIFI_MAX_PASS_LEN - 1);
-    pass_copy[WIFI_MAX_PASS_LEN - 1] = '\0';
+    strncpy(g_pass_buf, pass ? pass : "", WIFI_MAX_PASS_LEN - 1);
+    g_pass_buf[WIFI_MAX_PASS_LEN - 1] = '\0';
 
     close_password_dialog();
 
@@ -247,7 +265,7 @@ static void dialog_connect_cb(lv_event_t *e)
     lv_obj_add_flag(g_disco_btn, LV_OBJ_FLAG_DISABLED);
 
     pthread_t tid;
-    pthread_create(&tid, NULL, connect_worker, (void *)pass_copy);
+    pthread_create(&tid, NULL, connect_worker, (void *)g_pass_buf);
     pthread_detach(tid);
 }
 
@@ -369,12 +387,17 @@ static void refresh_ap_list(void)
         return;
     }
 
-    /* Allocate persistent storage for AP pointers (freed on next scan) */
+    /* Snapshot the shared AP list under lock, then render without holding it. */
     static wifi_ap_t ap_storage[WIFI_MAX_AP_COUNT];
-    memcpy(ap_storage, g_wifi_info.ap_list,
-           sizeof(wifi_ap_t) * (size_t)g_wifi_info.ap_count);
+    int ap_count;
 
-    for (int i = 0; i < g_wifi_info.ap_count; i++) {
+    pthread_mutex_lock(&g_ap_mutex);
+    ap_count = g_wifi_info.ap_count;
+    memcpy(ap_storage, g_wifi_info.ap_list,
+           sizeof(wifi_ap_t) * (size_t)ap_count);
+    pthread_mutex_unlock(&g_ap_mutex);
+
+    for (int i = 0; i < ap_count; i++) {
         wifi_ap_t *ap = &ap_storage[i];
 
         /* Each AP gets a button that spans the full list width */

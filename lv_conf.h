@@ -220,8 +220,9 @@
 /** Support bidirectional texts. Allows mixing Left-to-Right and Right-to-Left texts. */
 #define LV_USE_BIDI 0
 
-/** Enable Arabic/Persian processing
- *  In these languages characters should be replaced with an    *  other form based on their position in the text. */
+/** Enable Arabic/Persian processing.
+ *  In these languages characters should be replaced with another form
+ *  based on their position in the text. */
 #define LV_USE_ARABIC_PERSIAN_CHARS 0
 
 /*==================

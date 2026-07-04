@@ -212,68 +212,87 @@ int wifi_scan(wifi_info_t *info)
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Internal: write SSID as hex bytes to fp (avoids quoting issues)     */
+/* ------------------------------------------------------------------ */
+
+static void write_ssid_hex(FILE *fp, const char *ssid)
+{
+    fprintf(fp, "\tssid=");
+    for (size_t i = 0; ssid[i] != '\0'; i++)
+        fprintf(fp, "%02x", (unsigned char)ssid[i]);
+    fprintf(fp, "\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* Internal: write PSK with C-level escaping of " and \               */
+/* ------------------------------------------------------------------ */
+
+static void write_psk_quoted(FILE *fp, const char *password)
+{
+    fprintf(fp, "\tpsk=\"");
+    for (size_t i = 0; password[i] != '\0'; i++) {
+        if (password[i] == '"' || password[i] == '\\')
+            fputc('\\', fp);
+        fputc((unsigned char)password[i], fp);
+    }
+    fprintf(fp, "\"\n");
+}
+
+/* ------------------------------------------------------------------ */
+
 int wifi_connect(const char *ssid, const char *password)
 {
     if (!ssid || ssid[0] == '\0')
         return -1;
 
-    char cmd[512];
+    char cmd[256];
     char buf[256];
 
-    /* Remove all previously saved networks so we start clean */
-    snprintf(cmd, sizeof(cmd),
-             "wpa_cli -i %s remove_network all 2>/dev/null", WIFI_IFACE);
-    run_cmd(cmd, NULL, 0);
+    /*
+     * Write the network configuration directly to wpa_supplicant.conf
+     * using C file I/O.  This avoids putting SSID or password in any
+     * shell command string, which eliminates command-injection risk.
+     *
+     * The SSID is encoded as a hex string so that special characters
+     * (quotes, backslashes, non-ASCII) are handled transparently.
+     */
+    FILE *fp = fopen(WPA_CONF_PATH, "w");
+    if (!fp)
+        return -1;
 
-    /* Add a new network entry */
-    snprintf(cmd, sizeof(cmd),
-             "wpa_cli -i %s add_network 2>/dev/null", WIFI_IFACE);
-    run_cmd(cmd, buf, sizeof(buf));
+    fprintf(fp,
+            "ctrl_interface=%s\n"
+            "ctrl_interface_group=0\n"
+            "update_config=1\n"
+            "country=CN\n"
+            "\n"
+            "network={\n",
+            WPA_CTRL_DIR);
 
-    /* The network id is the first token on the last meaningful line */
-    int netid = 0;
-    {
-        char *p = buf;
-        /* Skip "Selected interface" preamble if present */
-        char *nl = strrchr(buf, '\n');
-        if (nl && nl > buf) {
-            /* Walk back past the trailing newline */
-            *nl = '\0';
-            char *prev_nl = strrchr(buf, '\n');
-            p = prev_nl ? (prev_nl + 1) : buf;
-        }
-        netid = atoi(p);
-    }
-
-    /* Set SSID (must be double-quoted inside the shell argument) */
-    snprintf(cmd, sizeof(cmd),
-             "wpa_cli -i %s set_network %d ssid '\"%s\"' 2>/dev/null",
-             WIFI_IFACE, netid, ssid);
-    run_cmd(cmd, NULL, 0);
+    write_ssid_hex(fp, ssid);
 
     if (password && password[0] != '\0') {
-        /* WPA/WPA2 – set the pre-shared key */
-        snprintf(cmd, sizeof(cmd),
-                 "wpa_cli -i %s set_network %d psk '\"%s\"' 2>/dev/null",
-                 WIFI_IFACE, netid, password);
-        run_cmd(cmd, NULL, 0);
+        write_psk_quoted(fp, password);
     } else {
-        /* Open network */
-        snprintf(cmd, sizeof(cmd),
-                 "wpa_cli -i %s set_network %d key_mgmt NONE 2>/dev/null",
-                 WIFI_IFACE, netid);
-        run_cmd(cmd, NULL, 0);
+        fprintf(fp, "\tkey_mgmt=NONE\n");
     }
 
-    /* Enable and select the network */
+    fprintf(fp, "}\n");
+    fclose(fp);
+
+    /* Signal wpa_supplicant to reload its configuration */
     snprintf(cmd, sizeof(cmd),
-             "wpa_cli -i %s enable_network %d 2>/dev/null",
-             WIFI_IFACE, netid);
+             "wpa_cli -i %s reconfigure 2>/dev/null", WIFI_IFACE);
+    run_cmd(cmd, NULL, 0);
+
+    /* Enable and select network 0 (the only entry we just wrote) */
+    snprintf(cmd, sizeof(cmd),
+             "wpa_cli -i %s enable_network 0 2>/dev/null", WIFI_IFACE);
     run_cmd(cmd, NULL, 0);
 
     snprintf(cmd, sizeof(cmd),
-             "wpa_cli -i %s select_network %d 2>/dev/null",
-             WIFI_IFACE, netid);
+             "wpa_cli -i %s select_network 0 2>/dev/null", WIFI_IFACE);
     run_cmd(cmd, NULL, 0);
 
     /* Wait up to 10 s for the association to complete */
@@ -296,11 +315,6 @@ int wifi_connect(const char *ssid, const char *password)
              "udhcpc -i %s -q -n 2>/dev/null || dhclient %s 2>/dev/null",
              WIFI_IFACE, WIFI_IFACE);
     system(cmd);
-
-    /* Save the configuration so it survives reboot */
-    snprintf(cmd, sizeof(cmd),
-             "wpa_cli -i %s save_config 2>/dev/null", WIFI_IFACE);
-    run_cmd(cmd, NULL, 0);
 
     return 0;
 }
